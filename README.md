@@ -1,14 +1,22 @@
-# WiFi Space Mapper (macOS)
+# WiFi Space Mapper
 
-Local-only prototype that scans nearby Wi-Fi access points on macOS, computes weighted RSSI correlations, embeds APs in a 3D spherical space, and streams snapshots to a Three.js Matrix-style visualization.
+Local-only prototype that scans nearby Wi-Fi access points, computes weighted RSSI correlations, embeds APs in a 3D spherical space, and streams snapshots to a Three.js Matrix-style visualization.
 
 ## What it does
 
 - Scans networks continuously (default every `1000ms`).
-- Scanner priority:
-  1. `airport -s`
-  2. native CoreWLAN helper CLI (auto-built from `backend/native/wifi_scan.m`)
-  3. `system_profiler SPAirPortDataType -json` fallback
+- Scanner priority (auto-detected by OS):
+  - macOS:
+    1. `airport -s`
+    2. native CoreWLAN helper CLI (auto-built from `backend/native/wifi_scan.m`)
+    3. `system_profiler SPAirPortDataType -json` fallback
+  - Windows:
+    1. optional native WLAN helper (`backend/bin/windows_wlan_scan.exe`) if present
+    2. `netsh wlan show networks mode=bssid`
+  - Linux:
+    1. `nmcli --terse --fields BSSID,SSID,SIGNAL,CHAN,SECURITY dev wifi list`
+    2. `iw dev <iface> scan` fallback
+    3. `iwctl station <iface> get-networks` fallback
 - Maintains rolling RSSI history and weighted quality history per AP.
 - Computes weighted Pearson correlations and renders strongest edges.
 - Computes 3D positions with classical MDS + smoothing.
@@ -25,9 +33,18 @@ Local-only prototype that scans nearby Wi-Fi access points on macOS, computes we
 
 ## Requirements
 
-- macOS
 - Node.js 18+
-- Command Line Tools (for building native CoreWLAN helper via `clang`)
+- Platform support:
+  - macOS:
+    - Command Line Tools (for building native CoreWLAN helper via `clang`)
+  - Windows:
+    - `netsh` available (default on modern Windows)
+    - optional: drop a compatible `backend/bin/windows_wlan_scan.exe` helper for higher-fidelity scans
+    - Location access enabled for terminal apps if Wi-Fi scan visibility is restricted by policy
+  - Linux:
+    - `nmcli` (NetworkManager) recommended
+    - `iw` optional fallback
+    - `iwctl` optional fallback (`iwd` environments)
 
 ## Run
 
@@ -116,16 +133,26 @@ curl -X POST http://localhost:8787/replay/start \
 
 ## Troubleshooting
 
-- `airport -s` returns only deprecation warning on macOS 15+:
-  - expected; backend auto-falls back to CoreWLAN helper, then `system_profiler`.
-- SSID/BSSID missing in CoreWLAN scans:
-  - grant Location Services to your terminal app.
-- Fallback mode caveat (`scanSource=system_profiler`):
-  - many APs may not include real RSSI; app estimates missing RSSI and marks rows with `~`.
-- First startup delay:
-  - native helper may compile on first run.
-- No frontend updates:
-  - verify backend is running on `8787` and WebSocket path `/ws`.
+- macOS:
+  - `airport -s` returns only deprecation warning on macOS 15+:
+    - expected; backend auto-falls back to CoreWLAN helper, then `system_profiler`.
+  - SSID/BSSID missing in CoreWLAN scans:
+    - grant Location Services to your terminal app.
+  - `scanSource=system_profiler` caveat:
+    - many APs may not include real RSSI; app estimates missing RSSI and marks rows with `~`.
+- Windows:
+  - `scanSource=windows_none`:
+    - ensure Wi-Fi is enabled and `WLAN AutoConfig` service is running.
+    - if scan results are unexpectedly empty, verify system location/privacy settings for desktop apps.
+- Linux:
+  - `scanSource=linux_none`:
+    - install/enable NetworkManager (`nmcli`) or provide `iw`/`iwctl`.
+    - `iw` scans can require elevated privileges depending on distro policy.
+- General:
+  - First startup delay on macOS:
+    - native helper may compile on first run.
+  - No frontend updates:
+    - verify backend is running on `8787` and WebSocket path `/ws`.
 
 ## Privacy
 

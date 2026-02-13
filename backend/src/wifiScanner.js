@@ -5,7 +5,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { parseAirportOutput, parseSystemProfilerOutput } from './parser.js';
+import {
+  parseAirportOutput,
+  parseIwScanOutput,
+  parseNetshOutput,
+  parseNmcliOutput,
+  parseSystemProfilerOutput,
+} from './parser.js';
 
 const execFileAsync = promisify(execFile);
 const BSSID_PATTERN = /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/u;
@@ -18,17 +24,22 @@ export const DEFAULT_AIRPORT_PATH =
 
 const SYSTEM_PROFILER_PATH = '/usr/sbin/system_profiler';
 const CLANG_PATH = '/usr/bin/clang';
+const NETSH_COMMANDS = ['netsh'];
+const NMCLI_COMMANDS = ['/usr/bin/nmcli', '/bin/nmcli', 'nmcli'];
+const IW_COMMANDS = ['/usr/sbin/iw', '/sbin/iw', '/usr/bin/iw', 'iw'];
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const backendRoot = join(__dirname, '..');
 const nativeSourcePath = join(backendRoot, 'native', 'wifi_scan.m');
 const nativeBinaryDir = join(backendRoot, 'bin');
 const nativeBinaryPath = join(nativeBinaryDir, 'corewlan_scan');
+const windowsNativeBinaryPath = join(nativeBinaryDir, 'windows_wlan_scan.exe');
+const IWCTL_COMMANDS = ['/usr/bin/iwctl', '/bin/iwctl', 'iwctl'];
 
 const inferredRssiCache = new Map();
 let nativeBuildPromise = null;
 let nativeBuildAttempted = false;
-let lastScanSource = 'airport';
+let lastScanSource = 'none';
 
 export function getLastScanSource() {
   return lastScanSource;
@@ -39,33 +50,98 @@ export async function scanWifiNetworks({
   timeoutMs = 5000,
   enableSystemProfilerFallback = true,
 } = {}) {
+  if (process.platform === 'darwin') {
+    return scanDarwin({
+      airportPath,
+      timeoutMs,
+      enableSystemProfilerFallback,
+    });
+  }
+
+  if (process.platform === 'win32') {
+    return scanWindows({ timeoutMs });
+  }
+
+  if (process.platform === 'linux') {
+    return scanLinux({ timeoutMs });
+  }
+
+  lastScanSource = `unsupported:${process.platform}`;
+  return [];
+}
+
+async function scanDarwin({
+  airportPath,
+  timeoutMs,
+  enableSystemProfilerFallback,
+}) {
   const airportNetworks = await tryAirportScan(airportPath, timeoutMs);
   if (airportNetworks.length) {
     lastScanSource = 'airport';
-    return airportNetworks;
+    return withScanSource(airportNetworks, 'airport');
   }
 
   const coreWlanNetworks = await tryCoreWlanScan(timeoutMs);
   const coreWlanUsable = isCoreWlanScanUsable(coreWlanNetworks);
   if (coreWlanNetworks.length && (!enableSystemProfilerFallback || coreWlanUsable)) {
     lastScanSource = 'corewlan';
-    return coreWlanNetworks;
+    return withScanSource(coreWlanNetworks, 'corewlan');
   }
 
   if (enableSystemProfilerFallback) {
     const profilerNetworks = await trySystemProfilerScan(timeoutMs);
     if (profilerNetworks.length) {
       lastScanSource = 'system_profiler';
-      return profilerNetworks;
+      return withScanSource(profilerNetworks, 'system_profiler');
     }
   }
 
   if (coreWlanNetworks.length) {
     lastScanSource = 'corewlan';
-    return coreWlanNetworks;
+    return withScanSource(coreWlanNetworks, 'corewlan');
   }
 
-  lastScanSource = 'none';
+  lastScanSource = 'mac_none';
+  return [];
+}
+
+async function scanWindows({ timeoutMs }) {
+  const nativeNetworks = await tryWindowsNativeScan(timeoutMs);
+  if (nativeNetworks.length) {
+    lastScanSource = 'windows_native';
+    return withScanSource(nativeNetworks, 'windows_native');
+  }
+
+  const netshNetworks = await tryNetshScan(timeoutMs);
+  if (netshNetworks.length) {
+    lastScanSource = 'windows_netsh';
+    return withScanSource(netshNetworks, 'windows_netsh');
+  }
+
+  lastScanSource = 'windows_none';
+  return [];
+}
+
+async function scanLinux({ timeoutMs }) {
+  const nmcliNetworks = await tryNmcliScan(timeoutMs);
+  if (nmcliNetworks.length) {
+    lastScanSource = 'linux_nmcli';
+    return withScanSource(nmcliNetworks, 'linux_nmcli');
+  }
+
+  const iwNetworks = await tryIwScan(timeoutMs);
+  if (iwNetworks.length) {
+    lastScanSource = 'linux_iw';
+    return withScanSource(iwNetworks, 'linux_iw');
+  }
+
+  const iwctlNetworks = await tryIwctlScan(timeoutMs);
+  if (iwctlNetworks.length) {
+    lastScanSource = 'linux_iwctl';
+    return withScanSource(iwctlNetworks, 'linux_iwctl');
+  }
+
+  lastScanSource = 'linux_none';
   return [];
 }
 
@@ -78,7 +154,6 @@ async function tryAirportScan(airportPath, timeoutMs) {
 
     return parseAirportOutput(stdout).map((network) => ({
       ...network,
-      scanSource: 'airport',
       rssiEstimated: false,
     }));
   } catch {
@@ -104,7 +179,8 @@ async function tryCoreWlanScan(timeoutMs) {
 async function trySystemProfilerScan(timeoutMs) {
   try {
     const profilerTimeout = Math.max(timeoutMs * 3, 12_000);
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execFirstAvailable(
+      [SYSTEM_PROFILER_PATH],
       SYSTEM_PROFILER_PATH,
       ['SPAirPortDataType', '-json'],
       {
@@ -115,6 +191,170 @@ async function trySystemProfilerScan(timeoutMs) {
 
     const networks = parseSystemProfilerOutput(stdout);
     return applyEstimatedRssi(networks);
+  } catch {
+    return [];
+  }
+}
+
+async function tryNetshScan(timeoutMs) {
+  try {
+    const { stdout } = await execFirstAvailable(
+      NETSH_COMMANDS,
+      'netsh',
+      ['wlan', 'show', 'networks', 'mode=bssid'],
+      {
+        timeout: Math.max(timeoutMs, 5_000),
+        maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+    return parseNetshOutput(stdout);
+  } catch {
+    return [];
+  }
+}
+
+async function tryWindowsNativeScan(timeoutMs) {
+  try {
+    const { stdout } = await execFirstAvailable(
+      [windowsNativeBinaryPath],
+      'windows-native',
+      [],
+      {
+        timeout: Math.max(timeoutMs, 5_000),
+        maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+    return parseWindowsNativeOutput(stdout);
+  } catch {
+    return [];
+  }
+}
+
+async function tryNmcliScan(timeoutMs) {
+  try {
+    const { stdout } = await execFirstAvailable(
+      NMCLI_COMMANDS,
+      'nmcli',
+      ['--terse', '--fields', 'BSSID,SSID,SIGNAL,CHAN,SECURITY', 'dev', 'wifi', 'list'],
+      {
+        timeout: Math.max(timeoutMs, 6_000),
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
+    return parseNmcliOutput(stdout);
+  } catch {
+    return [];
+  }
+}
+
+async function tryIwScan(timeoutMs) {
+  const interfaces = await listIwInterfaces(timeoutMs);
+  if (!interfaces.length) {
+    return [];
+  }
+
+  const networks = [];
+  for (const iface of interfaces.slice(0, 4)) {
+    try {
+      const { stdout } = await execFirstAvailable(
+        IW_COMMANDS,
+        'iw',
+        ['dev', iface, 'scan'],
+        {
+          timeout: Math.max(timeoutMs * 2, 8_000),
+          maxBuffer: 8 * 1024 * 1024,
+        },
+      );
+      networks.push(...parseIwScanOutput(stdout));
+    } catch {
+      // Continue to next interface.
+    }
+  }
+
+  return dedupeByStrongestRssi(networks);
+}
+
+async function tryIwctlScan(timeoutMs) {
+  const devices = await listIwctlDevices(timeoutMs);
+  if (!devices.length) {
+    return [];
+  }
+
+  const networks = [];
+  for (const device of devices.slice(0, 4)) {
+    try {
+      const { stdout } = await execFirstAvailable(
+        IWCTL_COMMANDS,
+        'iwctl',
+        ['station', device, 'get-networks'],
+        {
+          timeout: Math.max(timeoutMs, 6_000),
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      networks.push(...parseIwctlStationOutput(stdout, device));
+    } catch {
+      // Continue to next device.
+    }
+  }
+
+  return dedupeByStrongestRssi(networks);
+}
+
+async function listIwInterfaces(timeoutMs) {
+  try {
+    const { stdout } = await execFirstAvailable(
+      IW_COMMANDS,
+      'iw',
+      ['dev'],
+      {
+        timeout: Math.max(timeoutMs, 4_000),
+        maxBuffer: 1024 * 1024,
+      },
+    );
+
+    const interfaces = [];
+    for (const match of stdout.matchAll(/^\s*Interface\s+([^\s]+)\s*$/gmu)) {
+      interfaces.push(match[1]);
+    }
+    return interfaces;
+  } catch {
+    return [];
+  }
+}
+
+async function listIwctlDevices(timeoutMs) {
+  try {
+    const { stdout } = await execFirstAvailable(
+      IWCTL_COMMANDS,
+      'iwctl',
+      ['device', 'list'],
+      {
+        timeout: Math.max(timeoutMs, 5_000),
+        maxBuffer: 1024 * 1024,
+      },
+    );
+
+    const devices = [];
+    for (const rawLine of stdout.split(/\r?\n/u)) {
+      const line = rawLine.trim();
+      if (!line) {
+        continue;
+      }
+      if (/^(Name|Devices|---)/iu.test(line)) {
+        continue;
+      }
+
+      const firstToken = line.split(/\s+/u)[0];
+      if (!/^[a-zA-Z0-9_.:-]+$/u.test(firstToken)) {
+        continue;
+      }
+      devices.push(firstToken);
+    }
+
+    return Array.from(new Set(devices));
   } catch {
     return [];
   }
@@ -178,6 +418,104 @@ function parseCoreWlanOutput(rawOutput) {
   }
 
   return deduped;
+}
+
+function parseWindowsNativeOutput(rawOutput) {
+  if (!rawOutput || !rawOutput.trim()) {
+    return [];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawOutput);
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  const networks = [];
+
+  for (let index = 0; index < parsed.length; index += 1) {
+    const item = parsed[index];
+    const ssid = String(item?.ssid || '').trim() || HIDDEN_SSID;
+    const channel = String(item?.channel ?? '').trim();
+    const security = String(item?.security || 'UNKNOWN').trim() || 'UNKNOWN';
+    const rssi = Number.parseInt(String(item?.rssi ?? ''), 10);
+    if (!Number.isFinite(rssi)) {
+      continue;
+    }
+
+    const bssidRaw = String(item?.bssid || '').trim().toLowerCase();
+    const bssid = BSSID_PATTERN.test(bssidRaw)
+      ? bssidRaw
+      : syntheticBssid(`${ssid}::${channel || '?'}::${security}::${index + 1}`);
+
+    networks.push({
+      bssid,
+      ssid,
+      rssi,
+      channel,
+      band: inferBand(channel),
+      security,
+      rssiEstimated: false,
+      bssidSynthetic: !BSSID_PATTERN.test(bssidRaw),
+    });
+  }
+
+  return dedupeByStrongestRssi(networks);
+}
+
+function parseIwctlStationOutput(rawOutput, deviceName) {
+  if (!rawOutput || !rawOutput.trim()) {
+    return [];
+  }
+
+  const networks = [];
+  let rowIndex = 0;
+
+  for (const rawLine of rawOutput.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    if (/^(Available|Network name|Name|---|No networks)/iu.test(line)) {
+      continue;
+    }
+
+    const cleaned = line.replace(/^[>\*\s]+/u, '').trim();
+    const columns = cleaned.split(/\s{2,}/u).map((value) => value.trim()).filter(Boolean);
+    if (columns.length < 2) {
+      continue;
+    }
+
+    const ssid = columns[0] || HIDDEN_SSID;
+    const security = String(columns[1] || 'UNKNOWN').toUpperCase();
+    const signalToken = columns[columns.length - 1];
+    const signalStars = (signalToken.match(/\*/gu) || []).length;
+    if (signalStars <= 0) {
+      continue;
+    }
+
+    rowIndex += 1;
+    const rssi = starSignalToRssi(signalStars);
+    const bssid = syntheticBssid(`${deviceName}::${ssid}::${security}::${rowIndex}`);
+
+    networks.push({
+      bssid,
+      ssid,
+      rssi,
+      channel: '',
+      band: 'unknown',
+      security,
+      rssiEstimated: true,
+      bssidSynthetic: true,
+    });
+  }
+
+  return dedupeByStrongestRssi(networks);
 }
 
 function applyEstimatedRssi(networks) {
@@ -280,6 +618,55 @@ function hashCode(value) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function starSignalToRssi(stars) {
+  const clamped = Math.max(1, Math.min(5, Number(stars) || 1));
+  return -90 + clamped * 9;
+}
+
+function dedupeByStrongestRssi(networks) {
+  const byBssid = new Map();
+  for (const network of networks) {
+    if (!network) {
+      continue;
+    }
+    const existing = byBssid.get(network.bssid);
+    if (!existing || network.rssi > existing.rssi) {
+      byBssid.set(network.bssid, network);
+    }
+  }
+  return Array.from(byBssid.values());
+}
+
+function withScanSource(networks, scanSource) {
+  return networks.map((network) => ({
+    ...network,
+    scanSource,
+    rssiEstimated: Boolean(network.rssiEstimated),
+  }));
+}
+
+async function execFirstAvailable(candidates, fallbackName, args, options) {
+  let lastError = null;
+
+  for (const command of candidates) {
+    try {
+      return await execFileAsync(command, args, options);
+    } catch (error) {
+      lastError = error;
+      if (error?.code === 'ENOENT') {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error(`${fallbackName}-not-found`);
 }
 
 function isCoreWlanScanUsable(networks) {

@@ -81,6 +81,7 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     now: Date.now(),
+    scanPlatform: process.platform,
     mode: appState.mode,
     connectedClients: wss.clients.size,
     trackedAps: appState.lastSnapshot?.aps?.length ?? apState.size,
@@ -375,6 +376,7 @@ function buildSnapshot(now, mode = 'live') {
     edges,
     meta: {
       mode,
+      scanPlatform: process.platform,
       scanSource: getLastScanSource(),
       scanIntervalMs: runtimeConfig.scanIntervalMs,
       windowSize: runtimeConfig.windowSize,
