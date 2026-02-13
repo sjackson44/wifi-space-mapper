@@ -27,9 +27,19 @@ Local-only prototype that scans nearby Wi-Fi access points, computes weighted RS
   - window size
   - edge threshold
   - minimum overlap
+  - minimal mode toggle (hide edges/grid/coverage spheres for a cleaner view)
+  - subtle motion toggle (optional, low-amplitude node drift)
 - Supports local recording and replay:
   - record snapshots to NDJSON
   - replay NDJSON snapshots at configurable speed/loop
+
+## Visual Modes Preview
+
+![Default collapsed view](docs/screenshots/01-default-collapsed.png)
+
+![Full visual mode](docs/screenshots/02-full-visual.png)
+
+![Minimal mode](docs/screenshots/03-minimal-mode.png)
 
 ## Requirements
 

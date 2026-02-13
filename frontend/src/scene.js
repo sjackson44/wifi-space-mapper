@@ -13,8 +13,33 @@ import {
 const MAX_RENDER_NODES = 120;
 const MAX_RENDER_EDGES = 160;
 
+const BASE_EDGE_OPACITY = 0.2;
+const OUTER_GRID_OPACITY_NEAR = 0.15;
+const OUTER_GRID_OPACITY_FAR = 0.05;
+const INNER_GRID_OPACITY_NEAR = 0.09;
+const INNER_GRID_OPACITY_FAR = 0.04;
+const GRID_FADE_NEAR_DISTANCE = 60;
+const GRID_FADE_FAR_DISTANCE = 220;
+
+const MOTION_AMPLITUDE = 0.34;
+const MINIMAL_CAMERA_DISTANCE_FACTOR = 0.78;
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function lerp(a, b, alpha) {
+  return a + (b - a) * alpha;
+}
+
+function hashCode(value) {
+  const text = String(value ?? '');
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function truncateLabel(text, maxLength = 18) {
@@ -55,8 +80,10 @@ function createClusterColorGetter() {
       return cache.get(normalized);
     }
 
-    const hue = ((normalized * 67) % 360) / 360;
-    const color = new THREE.Color().setHSL(hue, 0.85, 0.62);
+    // Keep palette in green/cyan with subtle deterministic hue shifts.
+    const offset = ((normalized * 12) % 34) - 17;
+    const hue = (140 + offset) / 360;
+    const color = new THREE.Color().setHSL(hue, 0.78, 0.64);
     cache.set(normalized, color);
     return color;
   };
@@ -86,6 +113,10 @@ function createSpritePool(scene, glowTexture) {
       material,
       lastSeenFrame: -1,
       ap: null,
+      basePosition: new THREE.Vector3(),
+      baseScale: 0.1,
+      baseOpacity: 0,
+      motionSeed: 0,
     };
 
     sprite.userData.node = node;
@@ -137,37 +168,46 @@ export function createWifiScene(container, handlers = {}) {
   controls.minDistance = 45;
   controls.maxDistance = 240;
 
+  const defaultCameraOffset = camera.position.clone().sub(controls.target);
+  const defaultCameraDistance = Math.max(1, defaultCameraOffset.length());
+
   scene.add(new THREE.AmbientLight(0x4eff97, 0.35));
   const keyLight = new THREE.PointLight(0x52ff9f, 1.5, 460);
   keyLight.position.set(30, 52, 60);
   scene.add(keyLight);
 
+  const worldSphereMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(0x2fff8f),
+    wireframe: true,
+    transparent: true,
+    opacity: OUTER_GRID_OPACITY_NEAR,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+
   const worldSphere = new THREE.Mesh(
     new THREE.SphereGeometry(72, 48, 32),
-    new THREE.MeshBasicMaterial({
-      color: new THREE.Color(0x2fff8f),
-      wireframe: true,
-      transparent: true,
-      opacity: 0.14,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    }),
+    worldSphereMaterial,
   );
+
+  const innerSphereMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(0x15a25c),
+    wireframe: true,
+    transparent: true,
+    opacity: INNER_GRID_OPACITY_NEAR,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
 
   const innerSphere = new THREE.Mesh(
     new THREE.SphereGeometry(46, 32, 22),
-    new THREE.MeshBasicMaterial({
-      color: new THREE.Color(0x15a25c),
-      wireframe: true,
-      transparent: true,
-      opacity: 0.08,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    }),
+    innerSphereMaterial,
   );
 
-  scene.add(worldSphere);
-  scene.add(innerSphere);
+  const backgroundGridGroup = new THREE.Group();
+  backgroundGridGroup.add(worldSphere);
+  backgroundGridGroup.add(innerSphere);
+  scene.add(backgroundGridGroup);
 
   const edgePositions = new Float32Array(MAX_RENDER_EDGES * 2 * 3);
   const edgeColors = new Float32Array(MAX_RENDER_EDGES * 2 * 3);
@@ -185,7 +225,7 @@ export function createWifiScene(container, handlers = {}) {
   const edgeMaterial = new THREE.LineBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.4,
+    opacity: BASE_EDGE_OPACITY,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
@@ -197,7 +237,7 @@ export function createWifiScene(container, handlers = {}) {
   const coverageMaterial = new THREE.MeshBasicMaterial({
     wireframe: true,
     transparent: true,
-    opacity: 0.24,
+    opacity: 0.2,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     depthTest: false,
@@ -209,6 +249,22 @@ export function createWifiScene(container, handlers = {}) {
   coverageMesh.count = 0;
   coverageMesh.frustumCulled = false;
   scene.add(coverageMesh);
+
+  const selectionRingMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(0x9effcf),
+    transparent: true,
+    opacity: 0.55,
+    depthWrite: false,
+    depthTest: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const selectionRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.72, 0.95, 56),
+    selectionRingMaterial,
+  );
+  selectionRing.visible = false;
+  scene.add(selectionRing);
 
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
@@ -234,6 +290,11 @@ export function createWifiScene(container, handlers = {}) {
   const raycaster = new THREE.Raycaster();
   const pointerNdc = new THREE.Vector2(2, 2);
 
+  const visualSettings = {
+    minimalMode: false,
+    subtleMotion: false,
+  };
+
   let hoveredNode = null;
   let selectedBssid = null;
 
@@ -251,6 +312,7 @@ export function createWifiScene(container, handlers = {}) {
 
     node.id = id;
     node.ap = null;
+    node.motionSeed = (hashCode(id) % 720) / 80;
     node.sprite.visible = true;
     node.material.opacity = 0.9;
     activePoolById.set(id, node);
@@ -267,6 +329,10 @@ export function createWifiScene(container, handlers = {}) {
     node.id = null;
     node.ap = null;
     node.lastSeenFrame = -1;
+    node.baseScale = 0.1;
+    node.baseOpacity = 0;
+    node.basePosition.set(0, 0, 0);
+    node.sprite.position.set(0, 0, 0);
     node.sprite.visible = false;
     node.sprite.scale.setScalar(0.1);
     node.material.opacity = 0;
@@ -282,6 +348,51 @@ export function createWifiScene(container, handlers = {}) {
     selectedBssid = normalized;
     if (emit) {
       handlers.onSelect?.(selectedBssid);
+    }
+  }
+
+  function setCameraDistance(distance) {
+    const clampedDistance = clamp(distance, controls.minDistance, controls.maxDistance);
+    const offset = camera.position.clone().sub(controls.target);
+    if (offset.lengthSq() < 1e-6) {
+      offset.copy(defaultCameraOffset);
+    }
+    offset.setLength(clampedDistance);
+    camera.position.copy(controls.target).add(offset);
+    controls.update();
+  }
+
+  function applyVisualSettings(nextSettings = {}) {
+    const previousMinimalMode = visualSettings.minimalMode;
+
+    if (nextSettings.minimalMode !== undefined) {
+      visualSettings.minimalMode = Boolean(nextSettings.minimalMode);
+    }
+    if (nextSettings.subtleMotion !== undefined) {
+      visualSettings.subtleMotion = Boolean(nextSettings.subtleMotion);
+    }
+
+    const showDecor = !visualSettings.minimalMode;
+    edgeLines.visible = showDecor;
+    coverageMesh.visible = showDecor;
+    backgroundGridGroup.visible = showDecor;
+    edgeMaterial.opacity = showDecor ? BASE_EDGE_OPACITY : 0;
+
+    controls.rotateSpeed = visualSettings.minimalMode ? 0.78 : 1;
+
+    if (visualSettings.minimalMode !== previousMinimalMode) {
+      const desiredDistance = visualSettings.minimalMode
+        ? defaultCameraDistance * MINIMAL_CAMERA_DISTANCE_FACTOR
+        : defaultCameraDistance;
+      setCameraDistance(desiredDistance);
+    }
+
+    if (!showDecor) {
+      edgeGeometry.setDrawRange(0, 0);
+      edgePositionAttr.needsUpdate = true;
+      edgeColorAttr.needsUpdate = true;
+      coverageMesh.count = 0;
+      coverageMesh.instanceMatrix.needsUpdate = true;
     }
   }
 
@@ -405,6 +516,7 @@ export function createWifiScene(container, handlers = {}) {
   renderer.domElement.addEventListener('pointermove', onPointerMove);
   renderer.domElement.addEventListener('pointerleave', onPointerLeave);
   renderer.domElement.addEventListener('click', onClick);
+  applyVisualSettings();
 
   function update(snapshot) {
     frameId += 1;
@@ -426,23 +538,24 @@ export function createWifiScene(container, handlers = {}) {
       node.ap = ap;
 
       const target = positions[ap.bssid] ?? { x: 0, y: 0, z: 0 };
-      node.sprite.position.x += (target.x - node.sprite.position.x) * 0.35;
-      node.sprite.position.y += (target.y - node.sprite.position.y) * 0.35;
-      node.sprite.position.z += (target.z - node.sprite.position.z) * 0.35;
+      node.basePosition.x += (target.x - node.basePosition.x) * 0.35;
+      node.basePosition.y += (target.y - node.basePosition.y) * 0.35;
+      node.basePosition.z += (target.z - node.basePosition.z) * 0.35;
+      node.sprite.position.copy(node.basePosition);
 
       const strength = clamp((ap.rssi + 90) / 60, 0, 1);
       const isSelected = ap.bssid === selectedBssid;
-      const nodeSize = (1.7 + strength * 4.3) * (isSelected ? 1.32 : 1);
-      node.sprite.scale.set(nodeSize, nodeSize, 1);
+      node.baseScale = (1.7 + strength * 4.3) * (isSelected ? 1.18 : 1);
 
       const clusterColor = getClusterColor(ap.clusterId || 0);
       if (isSelected) {
-        tempColor.copy(clusterColor).lerp(whiteColor, 0.28);
+        tempColor.copy(clusterColor).lerp(whiteColor, 0.24);
         node.material.color.copy(tempColor);
       } else {
         node.material.color.copy(clusterColor);
       }
-      node.material.opacity = isSelected ? 1 : ap.rssiEstimated ? 0.68 : 0.95;
+      node.baseOpacity = isSelected ? 1 : ap.rssiEstimated ? 0.64 : 0.92;
+      node.material.opacity = node.baseOpacity;
     }
 
     for (const [id, node] of activePoolById.entries()) {
@@ -457,72 +570,83 @@ export function createWifiScene(container, handlers = {}) {
       }
     }
 
-    let coverageIndex = 0;
-    for (const ap of aps) {
-      const node = activePoolById.get(ap.bssid);
-      if (!node || coverageIndex >= MAX_RENDER_NODES) {
-        continue;
+    if (visualSettings.minimalMode) {
+      coverageMesh.count = 0;
+      coverageMesh.instanceMatrix.needsUpdate = true;
+    } else {
+      let coverageIndex = 0;
+      for (const ap of aps) {
+        const node = activePoolById.get(ap.bssid);
+        if (!node || coverageIndex >= MAX_RENDER_NODES) {
+          continue;
+        }
+
+        const strength = clamp((ap.rssi + 90) / 60, 0, 1);
+        const sphereRadius = (5 + strength * 20) * (ap.bssid === selectedBssid ? 1.08 : 1);
+
+        tempPosition.copy(node.basePosition);
+        tempScale.setScalar(sphereRadius);
+        tempMatrix.compose(tempPosition, identityQuaternion, tempScale);
+
+        coverageMesh.setMatrixAt(coverageIndex, tempMatrix);
+        coverageMesh.setColorAt(coverageIndex, getClusterColor(ap.clusterId || 0));
+        coverageIndex += 1;
       }
 
-      const strength = clamp((ap.rssi + 90) / 60, 0, 1);
-      const sphereRadius = (5 + strength * 20) * (ap.bssid === selectedBssid ? 1.16 : 1);
-
-      tempPosition.copy(node.sprite.position);
-      tempScale.setScalar(sphereRadius);
-      tempMatrix.compose(tempPosition, identityQuaternion, tempScale);
-
-      coverageMesh.setMatrixAt(coverageIndex, tempMatrix);
-      coverageMesh.setColorAt(coverageIndex, getClusterColor(ap.clusterId || 0));
-      coverageIndex += 1;
+      coverageMesh.count = coverageIndex;
+      coverageMesh.instanceMatrix.needsUpdate = true;
+      if (coverageMesh.instanceColor) {
+        coverageMesh.instanceColor.needsUpdate = true;
+      }
     }
 
-    coverageMesh.count = coverageIndex;
-    coverageMesh.instanceMatrix.needsUpdate = true;
-    if (coverageMesh.instanceColor) {
-      coverageMesh.instanceColor.needsUpdate = true;
+    if (visualSettings.minimalMode) {
+      edgeGeometry.setDrawRange(0, 0);
+      edgePositionAttr.needsUpdate = true;
+      edgeColorAttr.needsUpdate = true;
+    } else {
+      let edgeCount = 0;
+      for (const edge of snapshot.edges ?? []) {
+        if (edgeCount >= MAX_RENDER_EDGES) {
+          break;
+        }
+        if (edge.corr < edgeThreshold) {
+          continue;
+        }
+
+        const a = positions[edge.a];
+        const b = positions[edge.b];
+        if (!a || !b) {
+          continue;
+        }
+
+        const base = edgeCount * 6;
+        edgePositions[base] = a.x;
+        edgePositions[base + 1] = a.y;
+        edgePositions[base + 2] = a.z;
+        edgePositions[base + 3] = b.x;
+        edgePositions[base + 4] = b.y;
+        edgePositions[base + 5] = b.z;
+
+        const corrIntensity = clamp((edge.corr - edgeThreshold) / (1 - edgeThreshold), 0, 1);
+        const colorA = getClusterColor(clusterById.get(edge.a) || 0);
+        const colorB = getClusterColor(clusterById.get(edge.b) || 0);
+        tempColor.copy(colorA).lerp(colorB, 0.5).multiplyScalar(0.28 + corrIntensity * 0.5);
+
+        edgeColors[base] = tempColor.r;
+        edgeColors[base + 1] = tempColor.g;
+        edgeColors[base + 2] = tempColor.b;
+        edgeColors[base + 3] = tempColor.r;
+        edgeColors[base + 4] = tempColor.g;
+        edgeColors[base + 5] = tempColor.b;
+
+        edgeCount += 1;
+      }
+
+      edgeGeometry.setDrawRange(0, edgeCount * 2);
+      edgePositionAttr.needsUpdate = true;
+      edgeColorAttr.needsUpdate = true;
     }
-
-    let edgeCount = 0;
-    for (const edge of snapshot.edges ?? []) {
-      if (edgeCount >= MAX_RENDER_EDGES) {
-        break;
-      }
-      if (edge.corr < edgeThreshold) {
-        continue;
-      }
-
-      const a = positions[edge.a];
-      const b = positions[edge.b];
-      if (!a || !b) {
-        continue;
-      }
-
-      const base = edgeCount * 6;
-      edgePositions[base] = a.x;
-      edgePositions[base + 1] = a.y;
-      edgePositions[base + 2] = a.z;
-      edgePositions[base + 3] = b.x;
-      edgePositions[base + 4] = b.y;
-      edgePositions[base + 5] = b.z;
-
-      const corrIntensity = clamp((edge.corr - edgeThreshold) / (1 - edgeThreshold), 0, 1);
-      const colorA = getClusterColor(clusterById.get(edge.a) || 0);
-      const colorB = getClusterColor(clusterById.get(edge.b) || 0);
-      tempColor.copy(colorA).lerp(colorB, 0.5).multiplyScalar(0.45 + corrIntensity * 0.85);
-
-      edgeColors[base] = tempColor.r;
-      edgeColors[base + 1] = tempColor.g;
-      edgeColors[base + 2] = tempColor.b;
-      edgeColors[base + 3] = tempColor.r;
-      edgeColors[base + 4] = tempColor.g;
-      edgeColors[base + 5] = tempColor.b;
-
-      edgeCount += 1;
-    }
-
-    edgeGeometry.setDrawRange(0, edgeCount * 2);
-    edgePositionAttr.needsUpdate = true;
-    edgeColorAttr.needsUpdate = true;
   }
 
   const clock = new THREE.Clock();
@@ -542,6 +666,67 @@ export function createWifiScene(container, handlers = {}) {
     controls.target.y = Math.sin(t * 0.45) * 2;
     controls.update();
 
+    if (!visualSettings.minimalMode) {
+      const cameraDistance = camera.position.distanceTo(controls.target);
+      const fade = clamp(
+        (cameraDistance - GRID_FADE_NEAR_DISTANCE) /
+          (GRID_FADE_FAR_DISTANCE - GRID_FADE_NEAR_DISTANCE),
+        0,
+        1,
+      );
+      worldSphereMaterial.opacity = lerp(OUTER_GRID_OPACITY_NEAR, OUTER_GRID_OPACITY_FAR, fade);
+      innerSphereMaterial.opacity = lerp(INNER_GRID_OPACITY_NEAR, INNER_GRID_OPACITY_FAR, fade);
+    }
+
+    const selectedNode = selectedBssid ? activePoolById.get(selectedBssid) : null;
+
+    for (const node of activePoolById.values()) {
+      const isSelected = selectedNode === node;
+      const isHovered = hoveredNode === node;
+
+      let posX = node.basePosition.x;
+      let posY = node.basePosition.y;
+      let posZ = node.basePosition.z;
+
+      if (visualSettings.subtleMotion) {
+        const wave = t * 0.85 + node.motionSeed;
+        const amp = MOTION_AMPLITUDE;
+        posX += Math.sin(wave * 1.1) * amp;
+        posY += Math.sin(wave * 0.9 + 1.4) * amp * 0.75;
+        posZ += Math.cos(wave * 1.04 + 0.6) * amp;
+      }
+
+      node.sprite.position.set(posX, posY, posZ);
+
+      let scale = node.baseScale;
+      if (isHovered && !isSelected) {
+        scale *= 1.05;
+      }
+      if (isSelected) {
+        scale *= 1 + Math.sin(t * 3.2) * 0.09;
+      }
+      node.sprite.scale.set(scale, scale, 1);
+
+      if (isSelected) {
+        node.material.opacity = 1;
+      } else if (isHovered) {
+        node.material.opacity = Math.min(1, node.baseOpacity + 0.12);
+      } else {
+        node.material.opacity = node.baseOpacity;
+      }
+    }
+
+    if (selectedNode) {
+      selectionRing.visible = true;
+      selectionRing.position.copy(selectedNode.sprite.position);
+      selectionRing.quaternion.copy(camera.quaternion);
+      selectionRing.scale.setScalar(selectedNode.baseScale * (1.62 + Math.sin(t * 2.4) * 0.12));
+      selectionRingMaterial.color.copy(getClusterColor(selectedNode.ap?.clusterId || 0));
+      selectionRingMaterial.opacity = 0.6 + Math.sin(t * 2.4) * 0.1;
+    } else {
+      selectionRing.visible = false;
+    }
+
     composer.render();
   }
 
@@ -559,6 +744,8 @@ export function createWifiScene(container, handlers = {}) {
 
   return {
     update,
+    applyVisualSettings,
+    setVisualMode: applyVisualSettings,
     dispose() {
       cancelAnimationFrame(animationFrameId);
       window.removeEventListener('resize', onResize);
@@ -575,10 +762,12 @@ export function createWifiScene(container, handlers = {}) {
       edgeMaterial.dispose();
       coverageGeometry.dispose();
       coverageMaterial.dispose();
+      selectionRing.geometry.dispose();
+      selectionRingMaterial.dispose();
       worldSphere.geometry.dispose();
-      worldSphere.material.dispose();
+      worldSphereMaterial.dispose();
       innerSphere.geometry.dispose();
-      innerSphere.material.dispose();
+      innerSphereMaterial.dispose();
       glowTexture.dispose();
       controls.dispose();
       composer.dispose();

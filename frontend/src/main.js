@@ -17,7 +17,15 @@ import { connectSnapshotStream } from './ws.js';
 const sceneRoot = document.getElementById('scene-root');
 const hudRoot = document.getElementById('hud-root');
 
-const hud = createHud(hudRoot, {
+let hud;
+
+const scene = createWifiScene(sceneRoot, {
+  onSelect(bssid) {
+    hud?.setSelectedBssid(bssid);
+  },
+});
+
+hud = createHud(hudRoot, {
   applyConfig(payload) {
     return updateConfig(payload);
   },
@@ -36,10 +44,8 @@ const hud = createHud(hudRoot, {
   stopReplay() {
     return stopReplay();
   },
-});
-const scene = createWifiScene(sceneRoot, {
-  onSelect(bssid) {
-    hud.setSelectedBssid(bssid);
+  onVisualSettingsChange(settings) {
+    scene.applyVisualSettings(settings);
   },
 });
 
