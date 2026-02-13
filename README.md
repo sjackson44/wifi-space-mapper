@@ -1,6 +1,8 @@
 # WiFi Topology Viewer
 
-Local-only Wi-Fi topology viewer that scans nearby access points, computes rolling signal relationships, and renders a lightweight 3D correlation space.
+Local-only Wi-Fi topology viewer that scans nearby access points, computes rolling signal relationships, and renders a lightweight 3D correlation space. 
+
+This tool is intentionally lightweight and local-first. It does not perform packet inspection, traffic capture, or cloud telemetry. Topology is derived from correlation space and is not a physical floor plan.
 
 ## What it does
 
