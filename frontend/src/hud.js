@@ -27,9 +27,9 @@ function clusterColor(clusterId) {
     return '#57ff9f';
   }
 
-  const offset = ((clusterId * 17) % 37) - 18;
-  const hue = 150 + offset;
-  return `hsl(${hue} 82% 64%)`;
+  const offset = ((clusterId * 12) % 34) - 17;
+  const hue = 140 + offset;
+  return `hsl(${hue} 78% 64%)`;
 }
 
 export function createHud(container, handlers = {}) {
@@ -61,12 +61,13 @@ export function createHud(container, handlers = {}) {
       <section class="hud-controls">
         <h2>Visual</h2>
         <label class="checkbox-label minimal-mode-toggle">
-          <input data-role="minimal-mode" type="checkbox" />minimal mode
+          <input data-role="minimal-mode" type="checkbox" />Minimal mode
         </label>
-        <p class="control-hint">Hide edges + grid + coverage spheres for a cleaner view</p>
+        <p class="control-hint">Hide edges + grid + coverage spheres</p>
         <label class="checkbox-label subtle-motion-toggle">
-          <input data-role="subtle-motion" type="checkbox" />subtle motion
+          <input data-role="subtle-motion" type="checkbox" />Subtle motion
         </label>
+        <p class="control-hint">Add small drifting motion to nodes</p>
 
         <h2>Runtime</h2>
         <div class="control-grid">
@@ -125,8 +126,8 @@ export function createHud(container, handlers = {}) {
   let replayEnabled = false;
   let collapsed = true;
   let visualSettings = {
-    minimalMode: loadBooleanPreference(MINIMAL_MODE_STORAGE_KEY),
-    subtleMotion: loadBooleanPreference(SUBTLE_MOTION_STORAGE_KEY),
+    minimalMode: loadBooleanPreference(MINIMAL_MODE_STORAGE_KEY, true),
+    subtleMotion: loadBooleanPreference(SUBTLE_MOTION_STORAGE_KEY, true),
   };
   let selectedBssid = null;
   let lastSnapshot = null;
@@ -286,7 +287,7 @@ export function createHud(container, handlers = {}) {
   minimalModeInput.addEventListener('change', handleMinimalModeChange);
   subtleMotionInput.addEventListener('change', handleSubtleMotionChange);
   setCollapsed(true);
-  setVisualSettings({}, { persist: false, emit: true });
+  setVisualSettings({}, { persist: true, emit: true });
 
   function update(snapshot) {
     lastSnapshot = snapshot;
@@ -393,11 +394,15 @@ export function createHud(container, handlers = {}) {
   };
 }
 
-function loadBooleanPreference(key) {
+function loadBooleanPreference(key, defaultValue = false) {
   try {
-    return localStorage.getItem(key) === 'true';
+    const value = localStorage.getItem(key);
+    if (value == null) {
+      return defaultValue;
+    }
+    return value === 'true';
   } catch {
-    return false;
+    return defaultValue;
   }
 }
 

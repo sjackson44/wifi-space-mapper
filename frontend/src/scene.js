@@ -13,15 +13,16 @@ import {
 const MAX_RENDER_NODES = 120;
 const MAX_RENDER_EDGES = 160;
 
-const BASE_EDGE_OPACITY = 0.24;
-const OUTER_GRID_OPACITY_NEAR = 0.12;
+const BASE_EDGE_OPACITY = 0.2;
+const OUTER_GRID_OPACITY_NEAR = 0.15;
 const OUTER_GRID_OPACITY_FAR = 0.05;
-const INNER_GRID_OPACITY_NEAR = 0.08;
-const INNER_GRID_OPACITY_FAR = 0.03;
+const INNER_GRID_OPACITY_NEAR = 0.09;
+const INNER_GRID_OPACITY_FAR = 0.04;
 const GRID_FADE_NEAR_DISTANCE = 60;
 const GRID_FADE_FAR_DISTANCE = 220;
 
-const MOTION_AMPLITUDE = 0.36;
+const MOTION_AMPLITUDE = 0.34;
+const MINIMAL_CAMERA_DISTANCE_FACTOR = 0.78;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -80,9 +81,9 @@ function createClusterColorGetter() {
     }
 
     // Keep palette in green/cyan with subtle deterministic hue shifts.
-    const offset = ((normalized * 17) % 37) - 18;
-    const hue = (150 + offset) / 360;
-    const color = new THREE.Color().setHSL(hue, 0.82, 0.62);
+    const offset = ((normalized * 12) % 34) - 17;
+    const hue = (140 + offset) / 360;
+    const color = new THREE.Color().setHSL(hue, 0.78, 0.64);
     cache.set(normalized, color);
     return color;
   };
@@ -160,6 +161,9 @@ export function createWifiScene(container, handlers = {}) {
     600,
   );
   camera.position.set(0, 18, 130);
+  const defaultCameraPosition = camera.position.clone();
+  const minimalCameraPosition = defaultCameraPosition.clone().multiplyScalar(MINIMAL_CAMERA_DISTANCE_FACTOR);
+  const cameraTargetPosition = defaultCameraPosition.clone();
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -361,6 +365,14 @@ export function createWifiScene(container, handlers = {}) {
     backgroundGridGroup.visible = showDecor;
 
     edgeMaterial.opacity = showDecor ? BASE_EDGE_OPACITY : 0;
+
+    if (visualSettings.minimalMode) {
+      cameraTargetPosition.copy(minimalCameraPosition);
+      controls.rotateSpeed = 0.78;
+    } else {
+      cameraTargetPosition.copy(defaultCameraPosition);
+      controls.rotateSpeed = 1;
+    }
 
     if (!showDecor) {
       edgeGeometry.setDrawRange(0, 0);
@@ -639,6 +651,7 @@ export function createWifiScene(container, handlers = {}) {
     keyLight.position.z = Math.cos(t * 0.28) * 56;
 
     controls.target.y = Math.sin(t * 0.45) * 2;
+    camera.position.lerp(cameraTargetPosition, 0.08);
     controls.update();
 
     if (!visualSettings.minimalMode) {
@@ -678,7 +691,7 @@ export function createWifiScene(container, handlers = {}) {
         scale *= 1.05;
       }
       if (isSelected) {
-        scale *= 1 + Math.sin(t * 3.2) * 0.06;
+        scale *= 1 + Math.sin(t * 3.2) * 0.09;
       }
       node.sprite.scale.set(scale, scale, 1);
 
@@ -695,9 +708,9 @@ export function createWifiScene(container, handlers = {}) {
       selectionRing.visible = true;
       selectionRing.position.copy(selectedNode.sprite.position);
       selectionRing.quaternion.copy(camera.quaternion);
-      selectionRing.scale.setScalar(selectedNode.baseScale * (1.55 + Math.sin(t * 2.4) * 0.08));
+      selectionRing.scale.setScalar(selectedNode.baseScale * (1.62 + Math.sin(t * 2.4) * 0.12));
       selectionRingMaterial.color.copy(getClusterColor(selectedNode.ap?.clusterId || 0));
-      selectionRingMaterial.opacity = 0.52 + Math.sin(t * 2.4) * 0.08;
+      selectionRingMaterial.opacity = 0.6 + Math.sin(t * 2.4) * 0.1;
     } else {
       selectionRing.visible = false;
     }
