@@ -91,11 +91,14 @@ Then open:
 
 ## Global CLI Install
 
-Install from npm and run:
+Install from npm or brew and run:
 
 ```bash
 npm i -g wifi-topology-viewer
 wifi-topology-viewer
+
+brew tap sjackson44/wifi-topology-viewer
+brew install wifi-topology-viewer
 ```
 
 Then open:
