@@ -42,6 +42,27 @@ Local-only Wi-Fi topology viewer that scans nearby access points, computes rolli
 
 ![Minimal mode](docs/screenshots/03.png)
 
+
+## Platform Support
+
+**Primary platform:** macOS  
+Fully supported and actively tested using:
+
+- `airport -s`
+- Native CoreWLAN helper
+- `system_profiler` fallback
+
+---
+
+**Experimental support:**
+
+- Windows (via `netsh wlan show networks`)
+- Linux (via `nmcli`, `iw`, `iwctl` fallbacks)
+
+Windows and Linux paths rely on native OS tools and have not been extensively validated across hardware/drivers.
+
+If you use those platforms and encounter issues, contributions and reports are welcome.
+
 ## Requirements
 
 - Node.js 18+
