@@ -1,4 +1,4 @@
-# WiFi Space Mapper
+# WiFi Topology Viewer
 
 Local-only prototype that scans nearby Wi-Fi access points, computes weighted RSSI correlations, embeds APs in a 3D spherical space, and streams snapshots to a Three.js Matrix-style visualization.
 
@@ -49,7 +49,7 @@ Local-only prototype that scans nearby Wi-Fi access points, computes weighted RS
 ## Run
 
 ```bash
-cd wifi-space-mapper
+cd wifi-topology-viewer
 npm install
 npm run dev
 ```

@@ -40,7 +40,7 @@ function sleep(ms) {
 async function main() {
   const firstPass = unique(TARGET_PORTS.flatMap((port) => getPidsForPort(port)));
   if (!firstPass.length) {
-    console.log('[kill] no wifi-space-mapper processes found on ports 8787/5173');
+    console.log('[kill] no wifi-topology-viewer processes found on ports 8787/5173');
     return;
   }
 

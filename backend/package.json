@@ -1,5 +1,5 @@
 {
-  "name": "wifi-space-mapper-backend",
+  "name": "wifi-topology-viewer-backend",
   "version": "0.1.0",
   "private": true,
   "type": "module",

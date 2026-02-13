@@ -1,5 +1,5 @@
 {
-  "name": "wifi-space-mapper",
+  "name": "wifi-topology-viewer",
   "version": "0.1.0",
   "private": true,
   "workspaces": [

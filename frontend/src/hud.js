@@ -32,7 +32,7 @@ export function createHud(container, handlers = {}) {
     <div class="hud">
       <header class="hud-header">
         <div class="hud-title-row">
-          <h1>Wi-Fi Space Mapper</h1>
+          <h1>Wi-Fi Topology Viewer</h1>
           <button
             type="button"
             class="hud-collapse-btn"
