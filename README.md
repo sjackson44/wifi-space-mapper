@@ -33,6 +33,14 @@ Local-only prototype that scans nearby Wi-Fi access points, computes weighted RS
   - record snapshots to NDJSON
   - replay NDJSON snapshots at configurable speed/loop
 
+## Visual Modes Preview
+
+![Default collapsed view](docs/screenshots/01-default-collapsed.png)
+
+![Full visual mode](docs/screenshots/02-full-visual.png)
+
+![Minimal mode](docs/screenshots/03-minimal-mode.png)
+
 ## Requirements
 
 - Node.js 18+
