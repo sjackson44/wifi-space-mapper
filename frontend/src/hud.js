@@ -126,7 +126,7 @@ export function createHud(container, handlers = {}) {
   let replayEnabled = false;
   let collapsed = true;
   let visualSettings = {
-    minimalMode: loadBooleanPreference(MINIMAL_MODE_STORAGE_KEY, true),
+    minimalMode: loadBooleanPreference(MINIMAL_MODE_STORAGE_KEY, false),
     subtleMotion: loadBooleanPreference(SUBTLE_MOTION_STORAGE_KEY, true),
   };
   let selectedBssid = null;
