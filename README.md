@@ -52,8 +52,6 @@ Fully supported and actively tested using:
 - Native CoreWLAN helper
 - `system_profiler` fallback
 
----
-
 **Experimental support:**
 
 - Windows (via `netsh wlan show networks`)
